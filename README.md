@@ -1,17 +1,21 @@
-# Brain MRI Tumor Segmentation — Classical Algorithms
+# Brain MRI Tumor Segmentation — Classical + Deep Learning (U-Net)
 
-A Python notebook implementing and comparing three classical image segmentation algorithms on brain MRI scans, with full quantitative evaluation.
+A Python notebook implementing and comparing four segmentation algorithms on brain MRI scans, with full quantitative evaluation against expert-annotated ground truth masks.
 
 ---
 
 ## Project Overview
 
-This project segments brain tumors from MRI images using classical computer vision methods and evaluates each algorithm against radiologist-annotated ground truth masks.
+This project segments brain tumors from MRI images using three classical computer vision methods and one deep learning model, then evaluates all four against radiologist-annotated ground truth masks.
 
 **Algorithms implemented:**
-- Otsu Thresholding
-- K-means Clustering
-- Canny Edge Detection + post-processing
+
+| Algorithm | Category |
+|---|---|
+| Otsu Thresholding | Thresholding-based segmentation |
+| K-means Clustering | Clustering-based segmentation |
+| Canny Edge Detection + post-processing | Edge-based segmentation |
+| U-Net | Deep Learning segmentation |
 
 **Evaluation metrics:**
 - Dice Coefficient
@@ -22,13 +26,13 @@ This project segments brain tumors from MRI images using classical computer visi
 
 ## Dataset
 
-**Name:** LGG Brain MRI Segmentation  
-**Source:** [Kaggle — mateuszbuda/lgg-mri-segmentation](https://www.kaggle.com/datasets/mateuszbuda/lgg-mri-segmentation)  
-**Size:** ~3,900 brain MRI images from 110 patients  
-**Format:** `.tif` files (3-channel: pre-contrast, FLAIR, post-contrast) + binary mask per image  
+**Name:** LGG Brain MRI Segmentation
+**Source:** [Kaggle — mateuszbuda/lgg-mri-segmentation](https://www.kaggle.com/datasets/mateuszbuda/lgg-mri-segmentation)
+**Size:** ~3,900 brain MRI images from 110 patients
+**Format:** `.tif` files (3-channel: pre-contrast, FLAIR, post-contrast) + binary mask per image
 **Task:** Segment FLAIR abnormalities (lower-grade glioma tumors)
 
-> Each `.tif` image has a corresponding `_mask.tif` file containing the ground truth binary segmentation mask.
+> Each `.tif` image has a corresponding `_mask.tif` file containing the ground truth binary segmentation mask drawn by medical experts.
 
 ---
 
@@ -37,8 +41,10 @@ This project segments brain tumors from MRI images using classical computer visi
 ```
 ├── brain_mri_segmentation.ipynb   # Main notebook (all code)
 ├── README.md                       # This file
-├── segmentation_visual_comparison.png   # Generated after running
-└── metrics_comparison.png               # Generated after running
+├── unet_best.pth                        # Saved U-Net checkpoint (generated after training)
+├── unet_training_curves.png             # Loss and Dice curves (generated after training)
+├── all_algorithms_comparison.png        # Visual overlay comparison (generated after running)
+└── metrics_comparison_all.png           # Bar chart and line plot (generated after running)
 ```
 
 ---
@@ -54,11 +60,13 @@ matplotlib
 numpy
 pandas
 tqdm
+torch
+torchvision
 ```
 
 Install all at once:
 ```bash
-pip install opencv-python scikit-image scikit-learn matplotlib numpy pandas tqdm
+pip install opencv-python scikit-image scikit-learn matplotlib numpy pandas tqdm torch torchvision
 ```
 
 ---
@@ -70,7 +78,10 @@ pip install opencv-python scikit-image scikit-learn matplotlib numpy pandas tqdm
 1. Go to the [dataset page on Kaggle](https://www.kaggle.com/datasets/mateuszbuda/lgg-mri-segmentation)
 2. Click **New Notebook**
 3. Upload `brain_mri_segmentation.ipynb` via **File → Import Notebook**
-4. The dataset path is already set correctly — just click **Run All**
+4. Enable GPU: **Settings → Accelerator → GPU T4 x2**
+5. The dataset path is already set correctly — click **Run All**
+
+> GPU is strongly recommended for U-Net training. On CPU, training 30 epochs may take 1–2 hours. On Kaggle GPU, it takes ~10 minutes.
 
 ### Option 2: Local (VS Code / Jupyter)
 
@@ -90,16 +101,22 @@ pip install opencv-python scikit-image scikit-learn matplotlib numpy pandas tqdm
 
 | Section | Description |
 |---|---|
-| 1 | Import libraries |
-| 2 | Load dataset, filter tumor images, select samples |
+| 1 | Import libraries, detect GPU/CPU |
+| 2 | Load dataset, filter tumor images, train/val/test split (70/15/15%) |
 | 3 | Preprocessing: resize to 256×256, extract FLAIR channel, normalize |
-| 4.1 | Otsu Thresholding implementation |
-| 4.2 | K-means Clustering implementation (k=3) |
-| 4.3 | Canny Edge Detection + flood fill + morphological post-processing |
-| 5 | Evaluation metrics: Dice, IoU, Precision, Recall, F1, Accuracy |
-| 6 | Run all algorithms on 50 samples, compute average metrics |
-| 7 | Visual comparison: overlay masks on FLAIR images |
-| 8 | Bar chart + line plot comparing all metrics |
+| 4 | Evaluation metrics: Dice, IoU, Precision, Recall, F1, Accuracy |
+| 5.1 | Otsu Thresholding implementation |
+| 5.2 | K-means Clustering implementation (k=3) |
+| 5.3 | Canny Edge Detection + flood fill + morphological post-processing |
+| 5.4 | Run classical algorithms on test set |
+| 6.1 | PyTorch Dataset class with augmentation (flip, rotation) |
+| 6.2 | U-Net architecture (encoder, bottleneck, decoder, skip connections) |
+| 6.3 | Combined Dice + BCE loss function |
+| 6.4 | Training loop with Adam optimizer, LR scheduler, best checkpoint saving |
+| 6.5 | Training curves (loss and Dice over epochs) |
+| 6.6 | Evaluate U-Net on test set |
+| 7 | Visual comparison of all four algorithms with colored overlays |
+| 8 | Bar chart and line plot comparing all metrics |
 | 9 | Final results table, best algorithm per metric |
 | 10 | Conclusions and discussion |
 
@@ -108,23 +125,44 @@ pip install opencv-python scikit-image scikit-learn matplotlib numpy pandas tqdm
 ## Preprocessing Details
 
 - **Input channel:** FLAIR (channel index 1 of the 3-channel `.tif` file)
-  - Tumors are hyperintense (brighter) in FLAIR sequences, making this channel ideal for segmentation
-- **Resize:** All images resized to 256×256 pixels
-- **Normalization:** Pixel values normalized to [0, 255]
+  — Tumors appear hyperintense (brighter) in FLAIR, making this channel ideal for segmentation
+- **Resize:** All images standardized to 256×256 pixels
+- **Normalization:** Pixel values normalized to [0, 255] for classical algorithms; [0, 1] for U-Net
 - **Mask binarization:** Ground truth masks thresholded at 127 → {0, 1}
+- **Data split:** Only images containing at least one tumor pixel are used
 
 ---
 
 ## Algorithm Details
 
 ### Otsu Thresholding
-Automatically selects the threshold that maximizes inter-class variance between tumor and background pixels. Applied after Gaussian blur (5×5). Post-processed with morphological opening and closing to remove noise and fill holes. Final output is the largest connected component.
+Automatically selects the threshold that maximizes inter-class variance between tumor and background. Applied after Gaussian blur (5×5). Post-processed with morphological opening and closing. Final output is the largest connected component.
 
 ### K-means Clustering (k=3)
-Groups all pixels into 3 clusters based on intensity. The cluster with the highest mean intensity is assumed to be the tumor (FLAIR hyperintensity). Same morphological post-processing and connected component filtering as Otsu.
+Groups all pixels into 3 clusters by intensity. The cluster with the highest mean intensity is selected as tumor (FLAIR hyperintensity). Same morphological post-processing and connected component filtering as Otsu.
 
-### Canny Edge Detection
-Detects tumor boundaries using adaptive thresholds derived from the image median. Edges are dilated and flood-filled to create a solid region. A brightness mask (top 25% intensities) is applied to eliminate false positives. Heavy morphological cleanup is then applied.
+### Canny Edge Detection + Post-processing
+Detects tumor boundaries using adaptive thresholds derived from the image median. Edges are dilated to close gaps and flood-filled to create solid regions. A brightness mask (top 25% intensities) removes false positives. Morphological cleanup is applied as a final step.
+
+### U-Net
+Encoder-decoder architecture with skip connections. The encoder progressively downsamples the image (256→128→64→32→16) while increasing channels (3→64→128→256→512→1024). The decoder upsamples back to 256×256 using transposed convolutions, with skip connections from corresponding encoder layers to recover spatial detail. Trained end-to-end with combined Dice + BCE loss, Adam optimizer, and ReduceLROnPlateau scheduler.
+
+---
+
+## U-Net Training Configuration
+
+| Parameter | Value |
+|---|---|
+| Input size | 256×256×3 |
+| Encoder features | [64, 128, 256, 512] |
+| Bottleneck channels | 1024 |
+| Loss function | 0.5 × Dice Loss + 0.5 × BCE Loss |
+| Optimizer | Adam (lr=1e-4) |
+| LR Scheduler | ReduceLROnPlateau (patience=5, factor=0.5) |
+| Epochs | 30 (increase to 50–100 for better results) |
+| Batch size | 8 |
+| Augmentation | Random horizontal flip, vertical flip, rotation ±15° |
+| Checkpoint | Best validation Dice saved to `unet_best.pth` |
 
 ---
 
@@ -143,18 +181,23 @@ Detects tumor boundaries using adaptive thresholds derived from the image median
 
 ---
 
-## Key Findings
+## Expected Results (approximate)
 
-- Tumors appear **hyperintense** in FLAIR MRI, which all three algorithms exploit
-- **Otsu** is the fastest but tends to segment all bright regions (skull, ventricles) alongside the tumor
-- **K-means** (k=3) better discriminates tumor from other bright regions by splitting intensities into three groups
-- **Canny** produces accurate boundary maps but requires extensive post-processing to compute area-based metrics like Dice and IoU
-- For significantly better performance, deep learning models (e.g., U-Net) are recommended
+| Algorithm | Dice | IoU |
+|---|---|---|
+| Otsu | 0.30–0.45 | 0.20–0.35 |
+| K-means | 0.35–0.50 | 0.25–0.40 |
+| Canny | 0.20–0.35 | 0.15–0.25 |
+| **U-Net** | **0.75–0.88** | **0.60–0.80** |
+
+> Classical algorithms are limited by handcrafted rules. U-Net learns directly from data and significantly outperforms them.
 
 ---
 
 ## Outputs
 
-After running the notebook, two figures are saved:
-- `segmentation_visual_comparison.png` — side-by-side visual overlay comparison for 3 samples
-- `metrics_comparison.png` — bar chart and line plot of average metrics across all samples
+After running the full notebook, four files are saved:
+- `unet_best.pth` — best U-Net weights (can be reloaded for inference without retraining)
+- `unet_training_curves.png` — loss and Dice score over training epochs
+- `all_algorithms_comparison.png` — side-by-side visual overlay comparison for 4 samples
+- `metrics_comparison_all.png` — bar chart and line plot of average metrics across all algorithms
